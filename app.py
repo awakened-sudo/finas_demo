@@ -87,12 +87,15 @@ class VideoProcessor:
         frames = []
         timestamps = []
         frame_images = []
+        frame_numbers = []
         
         cap = cv2.VideoCapture(video_path)
+        
+        # Get video properties
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        frame_interval = int(fps * sample_rate)
-        duration = total_frames / fps
+        frame_interval = int(fps * sample_rate)  # Calculate frame interval based on FPS
+        duration = total_frames / fps if fps > 0 else 0
         
         video_metadata = {
             'fps': fps,
@@ -101,6 +104,10 @@ class VideoProcessor:
             'frame_interval': frame_interval
         }
         
+        if fps <= 0:
+            print("Warning: Could not determine video FPS. Using default frame counting.")
+            fps = 30  # Default fallback FPS
+        
         current_frame = 0
         while cap.isOpened():
             ret, frame = cap.read()
@@ -108,18 +115,36 @@ class VideoProcessor:
                 break
                 
             if current_frame % frame_interval == 0:
+                # Calculate accurate timestamp based on frame number and FPS
+                timestamp = current_frame / fps
+                timestamp_str = str(timedelta(seconds=int(timestamp)))
+                frame_text = f"Frame: {current_frame} | Time: {timestamp_str}"
+                
+                # Add text overlay to frame
+                frame = cv2.putText(
+                    frame,
+                    frame_text,
+                    (10, 30),  # Position (x, y)
+                    cv2.FONT_HERSHEY_SIMPLEX,  # Font
+                    1,  # Font scale
+                    (255, 255, 255),  # Color (white)
+                    2,  # Thickness
+                    cv2.LINE_AA  # Line type
+                )
+                
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame_images.append(frame_rgb)
                 
                 _, buffer = cv2.imencode('.jpg', frame)
                 base64_frame = base64.b64encode(buffer).decode('utf-8')
                 frames.append(base64_frame)
-                timestamps.append(current_frame / fps)
+                timestamps.append(timestamp)
+                frame_numbers.append(current_frame)
                 
             current_frame += 1
             
         cap.release()
-        return frames, timestamps, frame_images, video_metadata
+        return frames, timestamps, frame_images, video_metadata, frame_numbers
 
     def analyze_frame(self, frame_base64, timestamp):
         """Analyze a single frame using OpenAI Vision API"""
@@ -175,7 +200,7 @@ class MetadataManager:
         self.metadata_df = None
         self.video_metadata = None
         
-    def create_metadata_df(self, frame_metadata, timestamps, audio_data, video_metadata):
+    def create_metadata_df(self, frame_metadata, timestamps, audio_data, video_metadata, frame_numbers):
         """Create a DataFrame with synchronized metadata"""
         self.video_metadata = video_metadata
         audio_segments = []
@@ -187,8 +212,12 @@ class MetadataManager:
                 relevant_text = self.get_audio_segment_for_timestamp(audio_data, timestamp)
                 audio_segments.append(relevant_text)
         
+        formatted_timestamps = [str(timedelta(seconds=int(t))) for t in timestamps]
+        
         self.metadata_df = pd.DataFrame({
+            'frame_number': frame_numbers,
             'timestamp': timestamps,
+            'formatted_time': formatted_timestamps,
             'frame_description': frame_metadata,
             'audio_transcript': audio_segments
         })
@@ -444,10 +473,22 @@ def main():
             if st.button("🔄 Process Video"):
                 with st.spinner("Processing video..."):
                     try:
-                        frames, timestamps, frame_images, video_metadata = processor.extract_frames(
+                        # Get video properties first
+                        cap = cv2.VideoCapture(video_path)
+                        fps = cap.get(cv2.CAP_PROP_FPS)
+                        cap.release()
+                        
+                        if fps <= 0:
+                            st.warning("Could not determine video frame rate. Using default settings.")
+                        
+                        # Process frames with known FPS
+                        frames, timestamps, frame_images, video_metadata, frame_numbers = processor.extract_frames(
                             video_path, 
-                            sample_rate=2
+                            sample_rate=2  # Adjust sample rate as needed
                         )
+                        
+                        # Display frame rate information
+                        st.info(f"Video FPS: {video_metadata['fps']:.2f}")
                         
                         status_container = st.empty()
                         frame_display = st.empty()
@@ -457,12 +498,12 @@ def main():
                         for i, (frame, timestamp) in enumerate(zip(frames, timestamps)):
                             status_container.markdown(f"""
                                 <div class="status-box">
-                                    <h4>Processing Frame {i+1}/{len(frames)}</h4>
+                                    <h4>Processing Frame {frame_numbers[i]} ({format_timestamp(timestamp)})</h4>
                                     <p class="video-timestamp">Timestamp: {format_timestamp(timestamp)}</p>
                                 </div>
                             """, unsafe_allow_html=True)
                             
-                            frame_display.image(frame_images[i], caption=f"Current frame: {format_timestamp(timestamp)}")
+                            frame_display.image(frame_images[i], caption=f"Frame {frame_numbers[i]} | Time: {format_timestamp(timestamp)}")
                             metadata = processor.analyze_frame(frame, timestamp)
                             frame_metadata.append(metadata)
                             
@@ -480,7 +521,8 @@ def main():
                             frame_metadata, 
                             timestamps, 
                             audio_data,
-                            video_metadata
+                            video_metadata,
+                            frame_numbers
                         )
                         
                         status_container.empty()
@@ -522,11 +564,13 @@ def main():
                 metadata_tabs = st.tabs(["Timeline View", "Detailed View", "Export"])
                 
                 with metadata_tabs[0]:
-                    # Timeline view
+                    # Timeline view with frame numbers and formatted timestamps
                     st.dataframe(
-                        st.session_state.metadata_manager.metadata_df[['timestamp', 'frame_description']].style.format({
-                            'timestamp': lambda x: format_timestamp(x)
-                        }),
+                        st.session_state.metadata_manager.metadata_df[[
+                            'frame_number',
+                            'formatted_time', 
+                            'frame_description'
+                        ]],
                         use_container_width=True
                     )
                 
