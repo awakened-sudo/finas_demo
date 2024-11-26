@@ -76,4 +76,3 @@ urllib3==2.2.3
 whisper-timestamped @ git+https://github.com/linto-ai/whisper-timestamped@e495276f69f5ee31caa1209e7a05dae4442be5e4
 plotly
 openpyxl
-io
