@@ -101,13 +101,37 @@ class ReportGenerator:
         self.pdf.ln(5)
         
     def add_plot(self, fig, caption=""):
-        """Add a plot with optional caption"""
+        """Add a plot with improved readability"""
+        # Configure plot styling before saving
+        plt.rcParams.update({
+            'figure.figsize': (12, 8),
+            'font.size': 12,
+            'axes.labelsize': 14,
+            'axes.titlesize': 16,
+            'xtick.labelsize': 12,
+            'ytick.labelsize': 12,
+            'legend.fontsize': 12,
+            'figure.dpi': 300
+        })
+        
+        # Adjust layout to prevent text cutoff
+        plt.tight_layout(pad=2.0)
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
-            fig.savefig(tmpfile.name, format="png", bbox_inches="tight", dpi=300)
+            # Save with high quality settings
+            fig.savefig(tmpfile.name, 
+                       format="png",
+                       bbox_inches="tight",
+                       dpi=300,
+                       pad_inches=0.5)
+            
+            # Add to PDF with proper sizing
+            self.pdf.add_page()
             self.pdf.image(tmpfile.name, x=10, w=190)
+            
             if caption:
                 self.pdf.set_font('Arial', 'I', 10)
-                self.pdf.set_text_color(102, 102, 102)  # Light gray for caption
+                self.pdf.set_text_color(102, 102, 102)
                 self.pdf.cell(0, 10, caption, ln=True, align='C')
             self.pdf.ln(5)
 
