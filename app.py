@@ -17,6 +17,8 @@ from io import BytesIO
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict
 import uuid
+from fpdf import FPDF
+import matplotlib.pyplot as plt
 
 # Load environment variables
 load_dotenv()
@@ -71,6 +73,64 @@ class QueryResponse(BaseModel):
     relevant_timestamps: List[str]
     confidence: float
 
+class ReportGenerator:
+    def __init__(self):
+        self.pdf = FPDF()
+        self.pdf.set_auto_page_break(auto=True, margin=15)
+        
+    def add_title(self, title):
+        """Add a title to the PDF with proper styling"""
+        self.pdf.add_page()
+        self.pdf.set_font('Arial', 'B', 24)
+        self.pdf.set_text_color(31, 61, 143)  # Dark blue color
+        self.pdf.cell(0, 20, title, ln=True, align='C')
+        self.pdf.ln(10)  # Add some spacing after title
+        
+    def add_section_header(self, text):
+        """Add a section header with styling"""
+        self.pdf.set_font('Arial', 'B', 16)
+        self.pdf.set_text_color(0, 0, 0)  # Black color
+        self.pdf.cell(0, 10, text, ln=True)
+        self.pdf.ln(5)
+        
+    def add_text(self, text):
+        """Add normal text with proper styling"""
+        self.pdf.set_font('Arial', '', 12)
+        self.pdf.set_text_color(51, 51, 51)  # Dark gray for better readability
+        self.pdf.multi_cell(0, 8, text)
+        self.pdf.ln(5)
+        
+    def add_plot(self, fig, caption=""):
+        """Add a plot with optional caption"""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
+            fig.savefig(tmpfile.name, format="png", bbox_inches="tight", dpi=300)
+            self.pdf.image(tmpfile.name, x=10, w=190)
+            if caption:
+                self.pdf.set_font('Arial', 'I', 10)
+                self.pdf.set_text_color(102, 102, 102)  # Light gray for caption
+                self.pdf.cell(0, 10, caption, ln=True, align='C')
+            self.pdf.ln(5)
+
+    def add_dataframe(self, df, max_rows=30):
+        self.pdf.set_font('Arial', 'B', 12)
+        # Add headers
+        for idx, col in enumerate(df.columns):
+            self.pdf.cell(190/len(df.columns), 10, str(col), 1)
+        self.pdf.ln()
+        
+        # Add rows
+        self.pdf.set_font('Arial', '', 10)
+        for i in range(min(len(df), max_rows)):
+            for col in df.columns:
+                self.pdf.cell(190/len(df.columns), 10, str(df.iloc[i][col]), 1)
+            self.pdf.ln()
+            
+    def get_pdf_download_link(self):
+        """Generate download link for PDF"""
+        pdf_data = self.pdf.output(dest="S").encode("latin-1")
+        b64 = base64.b64encode(pdf_data)
+        return f'<a href="data:application/octet-stream;base64,{b64.decode()}" download="report.pdf">Download PDF Report</a>'
+        
 class VideoProcessor:
     def __init__(self, api_key):
         self.client = OpenAI(api_key=api_key)
@@ -81,7 +141,7 @@ class VideoProcessor:
             'ta-IN': 'Tamil',
             'ms-MY': 'Malay'
         }
-        
+
     def translate_text(self, text: str, target_language: str) -> str:
         """Translate text to target language using OpenAI"""
         try:
@@ -410,7 +470,11 @@ class MetadataManager:
     def export_metadata(self, format_type="json"):
         """Export metadata in various formats"""
         if format_type == "json":
-            return json.dumps(self.structured_data, indent=2)
+            # Convert to JSON with proper UTF-8 encoding
+            json_str = json.dumps(self.structured_data, 
+                                ensure_ascii=False,  # Allow non-ASCII characters
+                                indent=2)  # Keep pretty printing
+            return json_str.encode('utf-8')  # Return UTF-8 encoded bytes
         elif format_type == "csv":
             return self.metadata_df.to_csv(index=False)
         elif format_type == "excel":
@@ -586,55 +650,130 @@ def create_metadata_viewer(metadata_manager):
 
 def create_analytics_view(metadata_manager):
     """Enhanced analytics view with structured data insights"""
-    st.markdown("### 📊 Video Analytics")
+    tabs = st.tabs(["Analytics Dashboard", "Generate Report"])
     
-    # Basic metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric(
-            "Total Duration",
-            metadata_manager.structured_data['source']['duration']
-        )
-    with col2:
-        st.metric(
-            "Total Scenes",
-            len(metadata_manager.structured_data['source']['tracks']['caption']['eventData'])
-        )
-    with col3:
-        st.metric(
-            "Available Languages",
-            len(metadata_manager.get_subtitle_languages())
-        )
+    with tabs[0]:
+        st.markdown("### 📊 Video Analytics")
+        
+        # Basic metrics
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(
+                "Total Duration",
+                metadata_manager.structured_data['source']['duration']
+            )
+        with col2:
+            st.metric(
+                "Total Scenes",
+                len(metadata_manager.structured_data['source']['tracks']['caption']['eventData'])
+            )
+        with col3:
+            st.metric(
+                "Available Languages",
+                len(metadata_manager.get_subtitle_languages())
+            )
 
-    
-    # Scene analysis
-    scene_types = metadata_manager.metadata_df['scene_type'].value_counts()
-    fig = px.pie(
-        values=scene_types.values,
-        names=scene_types.index,
-        title="Scene Type Distribution"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Object detection timeline
-    st.markdown("### 🎯 Object Detection Timeline")
-    object_timeline = []
-    for _, row in metadata_manager.metadata_df.iterrows():
-        for obj in row['objects_detected']:
-            object_timeline.append({
-                'timestamp': row['formatted_time'],
-                'object': obj
-            })
-    
-    if object_timeline:
-        df_timeline = pd.DataFrame(object_timeline)
-        fig = px.scatter(
-            df_timeline,
-            x='timestamp',
-            y='object',
-            title="Object Appearances Over Time"
+        
+        # Scene analysis
+        scene_types = metadata_manager.metadata_df['scene_type'].value_counts()
+        fig = px.pie(
+            values=scene_types.values,
+            names=scene_types.index,
+            title="Scene Type Distribution"
         )
         st.plotly_chart(fig, use_container_width=True)
+        
+        # Object detection timeline
+        st.markdown("### 🎯 Object Detection Timeline")
+        object_timeline = []
+        for _, row in metadata_manager.metadata_df.iterrows():
+            for obj in row['objects_detected']:
+                object_timeline.append({
+                    'timestamp': row['formatted_time'],
+                    'object': obj
+                })
+        
+        if object_timeline:
+            df_timeline = pd.DataFrame(object_timeline)
+            fig = px.scatter(
+                df_timeline,
+                x='timestamp',
+                y='object',
+                title="Object Appearances Over Time"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with tabs[1]:
+        create_analytics_report(metadata_manager)
+
+def create_analytics_report(metadata_manager):
+    """Create downloadable PDF report of analytics"""
+    st.markdown("### Generate PDF Report")
+    
+    if st.button("Generate Report"):
+        with st.spinner("Generating PDF report..."):
+            try:
+                report = ReportGenerator()
+                
+                # Add title and timestamp
+                report.add_title("Video Analysis Report")
+                report.add_text(f"Generated on: {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}")
+                
+                # Add video statistics section
+                report.add_section_header("Video Statistics")
+                stats_text = (
+                    f"Duration: {metadata_manager.structured_data['source']['duration']}\n"
+                    f"Total Scenes: {len(metadata_manager.structured_data['source']['tracks']['caption']['eventData'])}\n"
+                    f"Available Languages: {len(metadata_manager.get_subtitle_languages())}"
+                )
+                report.add_text(stats_text)
+                
+                # Add scene distribution chart
+                report.add_section_header("Scene Type Distribution")
+                scene_types = metadata_manager.metadata_df['scene_type'].value_counts()
+                fig, ax = plt.subplots(figsize=(10, 6))
+                scene_types.plot(
+                    kind='pie',
+                    ax=ax,
+                    autopct='%1.1f%%',
+                    colors=['#1e3d8f', '#2e5edb', '#4b7bff', '#7698ff', '#a3b8ff']
+                )
+                ax.set_title('Distribution of Scene Types')
+                report.add_plot(fig, "Figure 1: Scene Type Distribution")
+                plt.close()
+                
+                # Add object detection timeline
+                report.add_section_header("Object Detection Timeline")
+                object_timeline = []
+                for _, row in metadata_manager.metadata_df.iterrows():
+                    for obj in row['objects_detected']:
+                        object_timeline.append({
+                            'timestamp': row['formatted_time'],
+                            'object': obj
+                        })
+                
+                if object_timeline:
+                    df_timeline = pd.DataFrame(object_timeline)
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    plt.scatter(df_timeline['timestamp'], df_timeline['object'], alpha=0.6)
+                    plt.xticks(rotation=45)
+                    plt.grid(True, alpha=0.3)
+                    ax.set_title("Object Appearances Over Time")
+                    ax.set_xlabel("Timestamp")
+                    ax.set_ylabel("Detected Objects")
+                    report.add_plot(fig, "Figure 2: Object Detection Timeline")
+                    plt.close()
+                
+                # Create download link
+                st.markdown(
+                    report.get_pdf_download_link(),
+                    unsafe_allow_html=True
+                )
+                
+                st.success("Report generated successfully!")
+                
+            except Exception as e:
+                st.error(f"Error generating report: {str(e)}")
 
 def init_session_state():
     """Initialize session state variables"""
@@ -792,7 +931,7 @@ def main():
                 st.markdown("### 💾 Export Options")
                 export_format = st.selectbox(
                     "Select Export Format",
-                    ["Structured JSON", "Full Analysis", "Subtitles Only"]
+                    ["Structured JSON", "Full Analysis", "Subtitles Only", "Scene Analysis"]
                 )
                 
                 if st.button("Export Data"):
@@ -801,35 +940,64 @@ def main():
                         if export_format == "Structured JSON":
                             data = json.dumps(
                                 st.session_state.metadata_manager.structured_data,
-                                indent=2
+                                indent=2,
+                                ensure_ascii=False  # Allow non-ASCII characters
                             )
                             st.download_button(
                                 "Download JSON",
-                                data,
+                                data.encode('utf-8'),  # Encode as UTF-8
                                 f"video_analysis_{timestamp}.json",
                                 "application/json"
                             )
                         elif export_format == "Full Analysis":
-                            # Export complete analysis including all metadata
-                            full_data = {
-                                "structured_data": st.session_state.metadata_manager.structured_data,
-                                "frame_analysis": st.session_state.metadata_manager.metadata_df.to_dict('records'),
-                                "video_info": st.session_state.metadata_manager.video_metadata
+                            try:
+                                full_data = {
+                                    "structured_data": st.session_state.metadata_manager.structured_data,
+                                    "frame_analysis": st.session_state.metadata_manager.metadata_df.to_dict('records'),
+                                    "video_info": st.session_state.metadata_manager.video_metadata,
+                                    "scene_analysis": {
+                                        str(idx): {
+                                            "timestamp": row["timestamp"],
+                                            "scene_type": row["scene_type"],
+                                            "frame_description": row["frame_description"]
+                                        }
+                                        for idx, row in st.session_state.metadata_manager.metadata_df.iterrows()
+                                    }
+                                }
+                                st.download_button(
+                                    "Download Full Analysis",
+                                    json.dumps(full_data, indent=2, ensure_ascii=False).encode('utf-8'),
+                                    f"full_analysis_{timestamp}.json",
+                                    "application/json"
+                                )
+                            except Exception as e:
+                                st.error(f"Error in Full Analysis export: {str(e)}")
+                        elif export_format == "Scene Analysis":
+                            scene_data = {
+                                str(idx): {
+                                    "timestamp": row["timestamp"],
+                                    "scene_type": row["scene_type"],
+                                    "frame_description": row["frame_description"]
+                                }
+                                for idx, row in st.session_state.metadata_manager.metadata_df.iterrows()
                             }
                             st.download_button(
-                                "Download Full Analysis",
-                                json.dumps(full_data, indent=2),
-                                f"full_analysis_{timestamp}.json",
+                                "Download Scene Analysis",
+                                json.dumps(scene_data, indent=2, ensure_ascii=False).encode('utf-8'),
+                                f"scene_analysis_{timestamp}.json",
                                 "application/json"
                             )
                         else:  # Subtitles Only
-                            subtitle_data = st.session_state.metadata_manager.structured_data['_source']['_subtitles']
-                            st.download_button(
-                                "Download Subtitles",
-                                json.dumps(subtitle_data, indent=2),
-                                f"subtitles_{timestamp}.json",
-                                "application/json"
-                            )
+                            try:
+                                subtitle_data = st.session_state.metadata_manager.structured_data['source']['subtitles']
+                                st.download_button(
+                                    "Download Subtitles",
+                                    json.dumps(subtitle_data, indent=2, ensure_ascii=False).encode('utf-8'),
+                                    f"subtitles_{timestamp}.json",
+                                    "application/json"
+                                )
+                            except Exception as e:
+                                st.error(f"Error exporting subtitles: {str(e)}")
                     except Exception as e:
                         st.error(f"Error exporting data: {str(e)}")
 
