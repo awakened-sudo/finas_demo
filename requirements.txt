@@ -77,3 +77,4 @@ whisper-timestamped @ git+https://github.com/linto-ai/whisper-timestamped@e49527
 plotly
 openpyxl
 fpdf 
+matplotlib
